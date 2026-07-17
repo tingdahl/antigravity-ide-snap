@@ -88,5 +88,5 @@ jobs:
           add-paths: UPSTREAM_VERSION
 
       - name: Add PR link to summary
-        if: steps.pr.outputs.pull-request-url != ''
+        if: steps.pr.outputs.pull-request-url
         run: echo "PR: ${{ steps.pr.outputs.pull-request-url }}" >> "$GITHUB_STEP_SUMMARY"
