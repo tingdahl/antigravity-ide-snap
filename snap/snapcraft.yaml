@@ -1,0 +1,82 @@
+name: antigravity-ide-snap
+adopt-info: antigravity-ide
+summary: Google Antigravity IDE — agent-first coding environment.
+description: |
+  Antigravity IDE is Google's agentic development environment built on top of
+  the VS Code / Electron platform. It lets you plan, build, debug and ship
+  software with autonomous AI agents working directly in your codebase.
+
+  This snap repackages the official upstream Linux build (the
+  "Antigravity IDE.tar.gz" archive published by Google) into a self-contained
+  snap. It uses classic confinement so the IDE has full access to the host
+  toolchain (git, ssh, gpg, language runtimes, compilers) and your real home
+  directory — the same model the VS Code, IntelliJ and Sublime Text snaps use,
+  because a development IDE must drive the host's tools directly.
+
+license: Proprietary
+grade: stable
+confinement: classic
+base: core22
+compression: lzo
+
+# The snap version and download URL are resolved at build time by querying
+# the auto-updater API (see override-pull). Add an arm64 entry below to also
+# cross-build for ARM.
+architectures:
+  - build-on: [amd64]
+    build-for: [amd64]
+
+parts:
+  antigravity-ide:
+    plugin: dump
+    source: ./upstream
+    override-pull: |
+      "$CRAFT_PROJECT_DIR/scripts/pull-upstream.sh"
+    # Classic confinement runs in the host's mount namespace, so the Electron
+    # binaries keep their upstream ELF interpreter and $ORIGIN rpath and resolve
+    # the GTK / graphics / glibc stack against the host system (like the raw
+    # upstream tarball). We therefore do NOT patchelf them against the base.
+    override-build: |
+      set -eux
+      APPDIR="$CRAFT_PART_INSTALL/usr/share/antigravity-ide"
+      mkdir -p "$APPDIR"
+      # Strip the leading "Antigravity IDE/" directory from the archive.
+      tar -xzf "$CRAFT_PART_SRC/antigravity-ide-build.tar.gz" \
+        -C "$APPDIR" --strip-components=1
+      # The chrome-sandbox helper is unused (we launch with --no-sandbox),
+      # drop its setuid bit so the snap packs cleanly.
+      if [ -f "$APPDIR/chrome-sandbox" ]; then
+        chmod 0755 "$APPDIR/chrome-sandbox"
+      fi
+      # Source the application icon straight from the upstream tarball so it can
+      # never go stale in the repo. Snapcraft and the Store use meta/gui/icon.png
+      # as the snap icon automatically — this is exactly what the top-level
+      # `icon:` key does internally, so we omit that key.
+      install -Dm644 "$APPDIR/resources/app/resources/linux/code.png" \
+        "$CRAFT_PART_INSTALL/meta/gui/icon.png"
+    build-packages:
+      - curl
+    # Under classic confinement the GTK / graphics / glibc stack is provided by
+    # the host, exactly as for the upstream tarball. We only bundle the CA
+    # certificate store and full locale data, which the app expects at fixed
+    # locations regardless of host configuration.
+    stage-packages:
+      - ca-certificates
+      - locales-all
+    prime:
+      - -usr/share/doc
+      - -usr/share/fonts
+      - -usr/share/lintian
+      - -usr/share/man
+
+apps:
+  antigravity-ide:
+    command: usr/share/antigravity-ide/bin/antigravity-ide --no-sandbox
+    common-id: antigravity-ide.desktop
+    environment:
+      ELECTRON_OZONE_PLATFORM_HINT: auto
+
+  url-handler:
+    command: usr/share/antigravity-ide/bin/antigravity-ide --no-sandbox --open-url
+    environment:
+      ELECTRON_OZONE_PLATFORM_HINT: auto

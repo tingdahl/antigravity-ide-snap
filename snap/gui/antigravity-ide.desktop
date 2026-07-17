@@ -1,0 +1,18 @@
+[Desktop Entry]
+Name=Antigravity IDE
+Comment=Agent-first coding environment by Google
+GenericName=Text Editor
+Exec=antigravity-ide %F
+Icon=${SNAP}/meta/gui/icon.png
+Type=Application
+StartupNotify=false
+StartupWMClass=antigravity-ide
+Categories=TextEditor;Development;IDE;
+MimeType=text/plain;inode/directory;x-scheme-handler/antigravity-ide;
+Actions=new-empty-window;
+Keywords=antigravity;ide;agent;editor;
+
+[Desktop Action new-empty-window]
+Name=New Empty Window
+Exec=antigravity-ide --new-window %F
+Icon=${SNAP}/meta/gui/icon.png

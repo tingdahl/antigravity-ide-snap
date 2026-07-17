@@ -1,0 +1,12 @@
+# Snapcraft build/output directories
+parts
+stage
+prime
+overlay
+
+# Packed snaps and related logs
+/*.snap
+/.snapcraft-pack*.log
+
+# Local upstream scratch area (if used manually)
+/upstream/

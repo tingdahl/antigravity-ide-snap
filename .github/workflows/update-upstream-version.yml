@@ -1,0 +1,77 @@
+name: Track Upstream Version
+
+# Runs daily.  Queries the Antigravity IDE release API and compares the latest
+# version against the UPSTREAM_VERSION sentinel file in this repo.  When a new
+# release is detected a pull request is opened that bumps the sentinel.
+#
+# Merging the PR signals approval of the new release and is the trigger point
+# for any downstream Snap Store build-and-publish pipeline.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: track-upstream-version
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch latest upstream version
+        id: upstream
+        run: |
+          version=$(curl -fsSL \
+            "https://antigravity-ide-auto-updater-974169037036.us-central1.run.app/releases" \
+          | python3 -c '
+          import json, re, sys
+          def semver_key(v):
+              nums = [int(x) for x in re.findall(r"\d+", str(v))]
+              while len(nums) < 3: nums.append(0)
+              return tuple(nums[:3])
+          releases = json.load(sys.stdin)
+          best = max(releases, key=lambda r: semver_key(r.get("version", "0.0.0")))
+          print(best["version"], end="")
+          ')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Read tracked version
+        id: current
+        run: echo "version=$(cat UPSTREAM_VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Bump sentinel file
+        if: steps.upstream.outputs.version != steps.current.outputs.version
+        run: echo "${{ steps.upstream.outputs.version }}" > UPSTREAM_VERSION
+
+      - name: Open pull request
+        if: steps.upstream.outputs.version != steps.current.outputs.version
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: bot/update-upstream-${{ steps.upstream.outputs.version }}
+          delete-branch: true
+          commit-message: "chore: update upstream Antigravity IDE to ${{ steps.upstream.outputs.version }}"
+          title: "chore: update upstream Antigravity IDE to ${{ steps.upstream.outputs.version }}"
+          body: |
+            Upstream released **${{ steps.upstream.outputs.version }}** (previously ${{ steps.current.outputs.version }}).
+
+            Before merging:
+            - [ ] Review the [upstream changelog](https://antigravity.google/changelog)
+            - [ ] Run a local test build:
+              ```
+              snapcraft pack
+              sudo snap install --dangerous --classic \
+                ./antigravity-ide-snap_${{ steps.upstream.outputs.version }}_amd64.snap
+              ```
+
+            Merging this PR will trigger the Snap Store build and publish.
+          add-paths: UPSTREAM_VERSION
