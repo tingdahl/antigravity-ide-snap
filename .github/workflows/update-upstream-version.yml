@@ -52,10 +52,12 @@ jobs:
       - name: Report status
         run: |
           if [[ "${{ steps.upstream.outputs.version }}" == "${{ steps.current.outputs.version }}" ]]; then
-            echo "Upstream is unchanged at ${{ steps.current.outputs.version }}."
+            msg="Upstream is unchanged at ${{ steps.current.outputs.version }}."
           else
-            echo "New upstream version ${{ steps.upstream.outputs.version }} detected (was ${{ steps.current.outputs.version }}); opening PR."
+            msg="New upstream version ${{ steps.upstream.outputs.version }} detected (was ${{ steps.current.outputs.version }}); opening PR."
           fi
+          echo "$msg"
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Bump sentinel file
         if: steps.upstream.outputs.version != steps.current.outputs.version
