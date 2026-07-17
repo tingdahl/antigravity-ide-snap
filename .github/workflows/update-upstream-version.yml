@@ -64,6 +64,7 @@ jobs:
         run: echo "${{ steps.upstream.outputs.version }}" > UPSTREAM_VERSION
 
       - name: Open pull request
+        id: pr
         if: steps.upstream.outputs.version != steps.current.outputs.version
         uses: peter-evans/create-pull-request@v7
         with:
@@ -85,3 +86,7 @@ jobs:
 
             Merging this PR will trigger the Snap Store build and publish.
           add-paths: UPSTREAM_VERSION
+
+      - name: Add PR link to summary
+        if: steps.pr.outputs.pull-request-url != ''
+        run: echo "PR: ${{ steps.pr.outputs.pull-request-url }}" >> "$GITHUB_STEP_SUMMARY"
