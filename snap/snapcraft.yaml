@@ -74,9 +74,13 @@ apps:
     command: usr/share/antigravity-ide/bin/antigravity-ide --no-sandbox
     common-id: antigravity-ide.desktop
     environment:
+      CHROME_DESKTOP: antigravity-ide.desktop
+      BAMF_DESKTOP_FILE_HINT: $SNAP/meta/gui/antigravity-ide.desktop
       ELECTRON_OZONE_PLATFORM_HINT: auto
 
   url-handler:
     command: usr/share/antigravity-ide/bin/antigravity-ide --no-sandbox --open-url
     environment:
+      CHROME_DESKTOP: antigravity-ide.desktop
+      BAMF_DESKTOP_FILE_HINT: $SNAP/meta/gui/antigravity-ide.desktop
       ELECTRON_OZONE_PLATFORM_HINT: auto
