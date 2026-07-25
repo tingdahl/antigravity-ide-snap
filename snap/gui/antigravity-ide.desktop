@@ -2,8 +2,8 @@
 Name=Antigravity IDE
 Comment=Agent-first coding environment by Google
 GenericName=Text Editor
-Exec=antigravity-ide %F
-Icon=${SNAP}/meta/gui/icon.png
+Exec=antigravity-ide-snap.antigravity-ide %F
+Icon=antigravity-ide
 Type=Application
 StartupNotify=false
 StartupWMClass=antigravity-ide
@@ -14,5 +14,5 @@ Keywords=antigravity;ide;agent;editor;
 
 [Desktop Action new-empty-window]
 Name=New Empty Window
-Exec=antigravity-ide --new-window %F
-Icon=${SNAP}/meta/gui/icon.png
+Exec=antigravity-ide-snap.antigravity-ide --new-window %F
+Icon=antigravity-ide
