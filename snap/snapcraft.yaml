@@ -49,11 +49,10 @@ parts:
         chmod 0755 "$APPDIR/chrome-sandbox"
       fi
       # Source the application icon straight from the upstream tarball so it can
-      # never go stale in the repo. Snapcraft and the Store use meta/gui/icon.png
-      # as the snap icon automatically — this is exactly what the top-level
-      # `icon:` key does internally, so we omit that key.
+      # never go stale in the repo. The file must be named to match the Icon=
+      # entry in the desktop file so snapd rewrites it to the absolute snap path.
       install -Dm644 "$APPDIR/resources/app/resources/linux/code.png" \
-        "$CRAFT_PART_INSTALL/meta/gui/icon.png"
+        "$CRAFT_PART_INSTALL/meta/gui/antigravity-ide.png"
     build-packages:
       - curl
     # Under classic confinement the GTK / graphics / glibc stack is provided by
