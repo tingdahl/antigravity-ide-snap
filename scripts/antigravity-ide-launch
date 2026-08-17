@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+APPDIR="$SNAP/usr/share/antigravity-ide"
+
+exec "$APPDIR/antigravity-ide" --no-sandbox "$@"
