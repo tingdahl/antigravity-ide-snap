@@ -9,21 +9,21 @@ description: |
 
   This snap repackages the official upstream Linux build (the
   "Antigravity IDE.tar.gz" archive published by Google) into a self-contained
-  snap. It uses classic confinement so the IDE and its agents have the same
-  access to your tools, compilers and files as a normally installed editor.
+  snap.
 
 license: Proprietary
 grade: stable
-confinement: classic
-base: core22
+confinement: strict
+base: core24
 compression: lzo
 adopt-info: antigravity-ide
 
 # Build-time fetch downloads the matching IDE tarball into this part source.
 # To also build arm64, add the corresponding "linux-arm" URL and a matching
 # build-for entry.
-architectures:
-  - build-on: [amd64]
+platforms:
+  amd64:
+    build-on: [amd64]
     build-for: [amd64]
 
 parts:
@@ -57,7 +57,10 @@ parts:
           exit 1
           ;;
       esac
-      curl -fsSL -o "$CRAFT_PART_SRC/antigravity-ide-build.tar.gz" "$URL"
+      curl --fail --location --silent --show-error \
+        --retry 8 --retry-all-errors --retry-delay 2 \
+        --connect-timeout 20 --max-time 900 \
+        -o "$CRAFT_PART_SRC/antigravity-ide-build.tar.gz" "$URL"
     # Auto-patch the ELF interpreter and rpath of the bundled Electron binary
     # and its shared libraries so they resolve against the base + staged libs.
     build-attributes:
@@ -78,7 +81,7 @@ parts:
       - curl
     stage-packages:
       - ca-certificates
-      - libasound2
+      - libasound2t64
       - libatk-bridge2.0-0
       - libatk1.0-0
       - libatspi2.0-0
@@ -87,6 +90,7 @@ parts:
       - libcurl4
       - libdrm2
       - libgbm1
+      - libgl1-mesa-dri
       - libglib2.0-0
       - libgtk-3-0
       - libnss3
@@ -101,6 +105,8 @@ parts:
       - libxkbcommon0
       - libxkbfile1
       - libxrandr2
+      - git
+      - openssh-client
       - locales-all
       - packagekit-gtk3-module
       - xdg-utils
@@ -131,6 +137,28 @@ apps:
   antigravity-ide:
     command: bin/antigravity-ide-launch
     common-id: antigravity-ide.desktop
+    plugs:
+      - audio-playback
+      - desktop
+      - desktop-legacy
+      - gpg-keys
+      - home
+      - network
+      - network-bind
+      - opengl
+      - removable-media
+      - ssh-keys
+      - wayland
+      - x11
 
   url-handler:
     command: bin/antigravity-ide-launch --open-url
+    plugs:
+      - desktop
+      - desktop-legacy
+      - home
+      - network
+      - network-bind
+      - removable-media
+      - wayland
+      - x11

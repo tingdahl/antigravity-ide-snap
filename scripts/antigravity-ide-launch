@@ -2,5 +2,18 @@
 set -eu
 
 APPDIR="$SNAP/usr/share/antigravity-ide"
+ARCH_TRIPLET="x86_64-linux-gnu"
 
-exec "$APPDIR/antigravity-ide" --no-sandbox "$@"
+# Strict snaps need explicit runtime search paths for GL/DRI modules.
+export LD_LIBRARY_PATH="$SNAP/usr/lib/$ARCH_TRIPLET:$APPDIR:${LD_LIBRARY_PATH:-}"
+export LIBGL_DRIVERS_PATH="$SNAP/usr/lib/$ARCH_TRIPLET/dri"
+export DRI_DRIVER_SEARCH_PATH="$SNAP/usr/lib/$ARCH_TRIPLET/dri"
+
+# Prefer the conservative backend that worked in the verified snap-shell test.
+# Set ANTIGRAVITY_USE_WAYLAND=1 to opt back into native Wayland.
+EXTRA_ARGS="--ozone-platform=x11 --disable-gpu --disable-gpu-compositing --in-process-gpu --disable-dev-shm-usage"
+if [ -n "${ANTIGRAVITY_USE_WAYLAND:-}" ] && [ -n "${WAYLAND_DISPLAY:-}" ]; then
+	EXTRA_ARGS=""
+fi
+
+exec "$APPDIR/antigravity-ide" --no-sandbox $EXTRA_ARGS "$@"
