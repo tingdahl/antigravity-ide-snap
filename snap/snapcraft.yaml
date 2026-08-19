@@ -79,51 +79,22 @@ parts:
       fi
     build-packages:
       - curl
+    # The gnome extension provides the GTK3/gdk-pixbuf/mesa/glib/icon/theme
+    # stack via the gnome-46-2404 platform snap, so only app-specific runtime
+    # libraries are staged here.
     stage-packages:
       - ca-certificates
-      - libasound2t64
-      - libatk-bridge2.0-0
-      - libatk1.0-0
-      - libatspi2.0-0
-      - libcairo2
-      - libcanberra-gtk3-module
       - libcurl4
-      - libdrm2
-      - libgbm1
-      - libgl1-mesa-dri
-      - libglib2.0-0
-      - libgtk-3-0
       - libnss3
-      - libpango-1.0-0
       - libsecret-1-0
-      - libsoup-3.0-0
-      - libwebkit2gtk-4.1-0
-      - libwayland-egl1
-      - libxcomposite1
-      - libxdamage1
-      - libxfixes3
-      - libxkbcommon0
       - libxkbfile1
-      - libxrandr2
       - git
       - openssh-client
-      - locales-all
-      - packagekit-gtk3-module
-      - xdg-utils
     prime:
       - -usr/share/doc
       - -usr/share/fonts
-      - -usr/share/icons
       - -usr/share/lintian
       - -usr/share/man
-      - -usr/lib/x86_64-linux-gnu/libcolordprivate.so.2.0.5
-      - -usr/lib/x86_64-linux-gnu/libdconf.so.1.0.0
-      - -usr/lib/x86_64-linux-gnu/libgthread-2.0.so.0.7200.4
-      - -usr/lib/x86_64-linux-gnu/libicuio.so.70.1
-      - -usr/lib/x86_64-linux-gnu/libicutu.so.70
-      - -usr/lib/x86_64-linux-gnu/libicutu.so.70.1
-      - -usr/lib/x86_64-linux-gnu/libicutest.so.70.1
-      - -usr/lib/x86_64-linux-gnu/libssl3.so
 
   launcher:
     plugin: dump
@@ -137,28 +108,28 @@ apps:
   antigravity-ide:
     command: bin/antigravity-ide-launch
     common-id: antigravity-ide.desktop
+    extensions:
+      - gnome
     plugs:
       - audio-playback
-      - desktop
-      - desktop-legacy
       - gpg-keys
       - home
       - network
       - network-bind
-      - opengl
+      - mount-observe
+      - password-manager-service
       - removable-media
       - ssh-keys
-      - wayland
-      - x11
 
   url-handler:
     command: bin/antigravity-ide-launch --open-url
+    extensions:
+      - gnome
     plugs:
-      - desktop
-      - desktop-legacy
       - home
       - network
       - network-bind
+      - mount-observe
+      - password-manager-service
       - removable-media
-      - wayland
-      - x11
+      - ssh-keys
