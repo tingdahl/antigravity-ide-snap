@@ -1,59 +1,56 @@
 # Packaging notes
 
-Verified findings and gotchas for packaging Antigravity IDE as a strictly
-confined snap. Kept in the repo so they persist across machines and
-contributors.
+Verified findings and gotchas for packaging Antigravity IDE as a
+**classic**-confinement snap. Kept in the repo so they persist across machines
+and contributors.
+
+## Confinement
+
+- This snap uses **classic** confinement. The Electron app and its agents run
+  with the same access to the host filesystem, tools and compilers as a
+  normally installed editor.
+- **Strict confinement was tried and abandoned.** It required stacking
+  workarounds (the `gnome` extension for a confinement-correct gdk-pixbuf,
+  Wayland/portal juggling so the file picker saw the real home, an
+  `nss_wrapper` shim for LDAP/SSSD accounts, avoiding staged `xdg-utils` so
+  OAuth sign-in worked) and still broke on the `home`-interface hidden-file
+  rule: the IDE stores config in `~/.antigravity-ide`, which strict AppArmor
+  denies. Classic sidesteps all of it.
+- The launcher stays lean: `--no-sandbox` plus one `LD_LIBRARY_PATH` export. No
+  ozone flags or portal env are needed under classic. The `LD_LIBRARY_PATH` is
+  required, though — see "Graphics / mesa" below.
+
+## Graphics / mesa (the startup crash)
+
+- Symptom: immediate `SIGSEGV` on launch inside `gbm_create_device` →
+  `libgallium*.so`. Happens even with `--disable-gpu` (Chromium probes GBM
+  early).
+- Root cause: the GTK/webkit stage-packages transitively pull the whole
+  mesa/GL/GBM/DRM stack into the snap, but mesa's DRI driver module
+  (`/usr/lib/x86_64-linux-gnu/gbm/dri_gbm.so`) always loads from the **host**.
+  A bundled `libgbm`/`libgallium` mixed with the host DRI module crashes — even
+  when both are the exact same Ubuntu version.
+- Fix: do **not** ship the graphics stack; use the host's (consistent by
+  construction under classic). `snap/snapcraft.yaml` `prime:`-excludes
+  `usr/lib/x86_64-linux-gnu/{dri,gbm,libEGL*,libGLESv2*,libGL.so*,`
+  `libGLdispatch*,libGLX*,libgallium*,libgbm*,libdrm*,libwayland-egl*,`
+  `libxcb-dri3*,libxcb-glx*}`, and the launcher sets
+  `LD_LIBRARY_PATH=$SNAP/usr/lib/<triplet>:$APPDIR:/usr/lib/<triplet>:/lib/<triplet>`.
+  Bundled libs win via rpath + the leading snap paths; the excluded mesa libs
+  resolve from the host tail.
+- Note: snapd scrubs `LD_*` from the outer environment of `snap run`, so
+  `LD_LIBRARY_PATH` must be exported **inside** the launch script.
 
 ## Base and toolchain
 
 - `core24` base is glibc 2.39. The upstream Antigravity Electron binary
-  requires GLIBC_2.38+, so `core22` (glibc 2.35) does **not** work.
+  requires GLIBC_2.38+ (the ELF interpreter is patched to the base's linker via
+  `enable-patchelf`), so `core22` (glibc 2.35) does **not** work.
 - `core26` cannot be built on an Ubuntu 24.04 host.
 - `core24` requires the `platforms:` stanza, not `architectures:`.
-
-## GTK / gdk-pixbuf under strict confinement
-
-- Symptom: the app aborts on the first GTK icon render with
-  `Gtk:ERROR ... Failed to load .../image-missing.png: Unrecognized image file
-  format`, and `gdk-pixbuf-thumbnailer` fails on *any* PNG with
-  "Couldn't recognize the image file format".
-- Root cause: manually staging `gtk3` / `gdk-pixbuf` does not work under strict
-  confinement. PNG/JPEG are **built-in** loaders in Ubuntu's `libgdk_pixbuf`
-  (not external `.so`, not in `loaders.cache`), and those built-ins fail to
-  register under confinement. Verified: the snap's own
-  `gdk-pixbuf-thumbnailer` + `libgdk_pixbuf` (byte-identical to the host copy)
-  decodes PNG fine when run **unconfined** via its rpath, but fails under
-  `snap run` even with a clean `env -i` and **no** pixbuf-related AppArmor
-  denial. Confinement is the sole differentiator.
-- Fix: use the **`gnome` extension** (gnome-46-2404 platform snap) instead of
-  hand-staging GTK. It provides a confinement-correct
-  GTK/gdk-pixbuf/mesa/glib/icon/theme/fontconfig stack plus command-chain env.
-  This is what VS Code's own snap does. After switching, remove staged
-  `libgtk-3-0` / `libgdk-pixbuf*` / `libglib2.0*` / mesa / themes / icons, the
-  pixbuf/schema `override-prime`, and the GTK/GDK env exports from the launcher.
-- The `gnome` extension auto-adds these plugs — do not list them manually:
-  `desktop`, `desktop-legacy`, `wayland`, `x11`, `opengl`, `gsettings`.
-
-## Desktop integration quirks
-
-- **File dialog opened in the snap's private HOME** (`~/snap/<name>/<rev>`)
-  instead of the real home. This cannot be fixed by exporting
-  `HOME=$SNAP_REAL_HOME`: the `home` interface AppArmor rule
-  (`owner @{HOME}/[^s.]** rwklix`) excludes top-level hidden dirs, and the app
-  stores config in `~/.antigravity-ide` (hidden), so writes to the real home
-  would be denied. `GTK_USE_PORTAL=1` alone did not switch this Electron's
-  classic GTK chooser.
-  - Fix: the launcher prefers native Wayland when `$WAYLAND_DISPLAY` is set.
-    Under Ozone/Wayland, Electron uses the xdg-desktop-portal file picker,
-    which runs unconfined and shows the real home. X11 is the fallback
-    (`--disable-gpu`). Escape hatches: `ANTIGRAVITY_FORCE_X11=1`,
-    `ANTIGRAVITY_DISABLE_GPU=1`.
-- **Sign In (OAuth) did nothing** because staging `xdg-utils` placed a
-  `$SNAP/usr/bin/xdg-open` first in `PATH`, shadowing snapd's portal shim
-  `/usr/bin/xdg-open` (`exec snapctl user-open "$@"`). Fix: do **not** stage
-  `xdg-utils`; let snapd's shim open URLs in the host browser.
-- Keyring/secret storage needs the `password-manager-service` plug connected:
-  `snap connect antigravity-ide-snap:password-manager-service`.
+- On core24 several runtime packages carry the `t64` suffix
+  (`libasound2t64`, `libgtk-3-0t64`, `libatk1.0-0t64`,
+  `libatk-bridge2.0-0t64`).
 
 ## Desktop entry / icon
 

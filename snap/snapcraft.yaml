@@ -9,11 +9,12 @@ description: |
 
   This snap repackages the official upstream Linux build (the
   "Antigravity IDE.tar.gz" archive published by Google) into a self-contained
-  snap.
+  snap. It uses classic confinement so the IDE and its agents have the same
+  access to your tools, compilers and files as a normally installed editor.
 
 license: Proprietary
 grade: stable
-confinement: strict
+confinement: classic
 base: core24
 compression: lzo
 adopt-info: antigravity-ide
@@ -79,22 +80,55 @@ parts:
       fi
     build-packages:
       - curl
-    # The gnome extension provides the GTK3/gdk-pixbuf/mesa/glib/icon/theme
-    # stack via the gnome-46-2404 platform snap, so only app-specific runtime
-    # libraries are staged here.
     stage-packages:
       - ca-certificates
+      - libasound2t64
+      - libatk-bridge2.0-0t64
+      - libatk1.0-0t64
+      - libatspi2.0-0
+      - libcairo2
+      - libcanberra-gtk3-module
       - libcurl4
+      - libdrm2
+      - libgbm1
+      - libglib2.0-0
+      - libgtk-3-0t64
       - libnss3
+      - libpango-1.0-0
       - libsecret-1-0
+      - libsoup-3.0-0
+      - libwebkit2gtk-4.1-0
+      - libwayland-egl1
+      - libxcomposite1
+      - libxdamage1
+      - libxfixes3
+      - libxkbcommon0
       - libxkbfile1
-      - git
-      - openssh-client
+      - libxrandr2
+      - locales-all
+      - packagekit-gtk3-module
+      - xdg-utils
     prime:
       - -usr/share/doc
       - -usr/share/fonts
+      - -usr/share/icons
       - -usr/share/lintian
       - -usr/share/man
+      # Drop the bundled mesa/GL/GBM/DRM stack and use the host's, so it stays
+      # consistent with the host DRI driver module under classic confinement.
+      - -usr/lib/x86_64-linux-gnu/dri
+      - -usr/lib/x86_64-linux-gnu/gbm
+      - -usr/lib/x86_64-linux-gnu/libEGL*
+      - -usr/lib/x86_64-linux-gnu/libGLESv2*
+      - -usr/lib/x86_64-linux-gnu/libGL.so*
+      - -usr/lib/x86_64-linux-gnu/libGLdispatch*
+      - -usr/lib/x86_64-linux-gnu/libGLX*
+      - -usr/lib/x86_64-linux-gnu/libgallium*
+      - -usr/lib/x86_64-linux-gnu/libgbm*
+      - -usr/lib/x86_64-linux-gnu/libdrm*
+      - -usr/lib/x86_64-linux-gnu/libwayland-egl*
+      - -usr/lib/x86_64-linux-gnu/libxcb-dri3*
+      - -usr/lib/x86_64-linux-gnu/libxcb-glx*
 
   launcher:
     plugin: dump
@@ -108,28 +142,7 @@ apps:
   antigravity-ide:
     command: bin/antigravity-ide-launch
     common-id: antigravity-ide.desktop
-    extensions:
-      - gnome
-    plugs:
-      - audio-playback
-      - gpg-keys
-      - home
-      - network
-      - network-bind
-      - mount-observe
-      - password-manager-service
-      - removable-media
-      - ssh-keys
 
   url-handler:
     command: bin/antigravity-ide-launch --open-url
-    extensions:
-      - gnome
-    plugs:
-      - home
-      - network
-      - network-bind
-      - mount-observe
-      - password-manager-service
-      - removable-media
       - ssh-keys

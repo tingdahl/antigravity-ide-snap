@@ -4,28 +4,9 @@ set -eu
 APPDIR="$SNAP/usr/share/antigravity-ide"
 ARCH_TRIPLET="x86_64-linux-gnu"
 
-# The gnome extension's command-chain already sets up the GTK/gdk-pixbuf/mesa/
-# GL/GSettings/fontconfig environment for strict confinement. Only add the
-# app's own bundled libraries to the search path.
-export LD_LIBRARY_PATH="$SNAP/usr/lib/$ARCH_TRIPLET:$APPDIR:${LD_LIBRARY_PATH:-}"
+# Bundled libs win; host paths supply the mesa/GL/GBM/DRM stack, which must
+# match the host's DRI driver module under classic confinement (bundling it
+# crashes gbm_create_device).
+export LD_LIBRARY_PATH="$SNAP/usr/lib/$ARCH_TRIPLET:$APPDIR:/usr/lib/$ARCH_TRIPLET:/lib/$ARCH_TRIPLET"
 
-# Route file dialogs and URI opening (e.g. OAuth sign-in) through the xdg
-# desktop portal so they see the real home directory and the host browser.
-export GTK_USE_PORTAL=1
-
-# Prefer native Wayland when available: under Ozone/Wayland the app uses the
-# xdg-desktop-portal file picker, which shows the real home directory instead
-# of the snap's private home. Fall back to X11 (with GPU disabled, the most
-# reliable strict-confinement backend) otherwise.
-# Escape hatches: ANTIGRAVITY_FORCE_X11=1 forces X11; ANTIGRAVITY_DISABLE_GPU=1
-# disables the GPU under Wayland if the driver misbehaves.
-if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -z "${ANTIGRAVITY_FORCE_X11:-}" ]; then
-	EXTRA_ARGS="--ozone-platform=wayland --enable-features=UseOzonePlatform,WaylandWindowDecorations --disable-dev-shm-usage"
-	if [ -n "${ANTIGRAVITY_DISABLE_GPU:-}" ]; then
-		EXTRA_ARGS="$EXTRA_ARGS --disable-gpu"
-	fi
-else
-	EXTRA_ARGS="--ozone-platform=x11 --disable-gpu --disable-dev-shm-usage"
-fi
-
-exec "$APPDIR/antigravity-ide" --no-sandbox $EXTRA_ARGS "$@"
+exec "$APPDIR/antigravity-ide" --no-sandbox "$@"
