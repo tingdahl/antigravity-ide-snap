@@ -1,6 +1,11 @@
 name: antigravity-ide-snap
 version: '0+unknown'
+title: Antigravity IDE
 summary: Google Antigravity IDE — agent-first coding environment.
+contact: https://github.com/tingdahl/antigravity-ide-snap/issues
+issues: https://github.com/tingdahl/antigravity-ide-snap/issues
+source-code: https://github.com/tingdahl/antigravity-ide-snap
+website: https://antigravity.google
 icon: snap/gui/antigravity-ide.png
 description: |
   Antigravity IDE is Google's agentic development environment built on top of
@@ -11,6 +16,10 @@ description: |
   "Antigravity IDE.tar.gz" archive published by Google) into a self-contained
   snap. It uses classic confinement so the IDE and its agents have the same
   access to your tools, compilers and files as a normally installed editor.
+
+  This is an unofficial community package. The issue tracker linked here is for
+  problems with the snap packaging only. Report bugs in the IDE itself to Google
+  via https://antigravity.google.
 
 license: Proprietary
 grade: stable
