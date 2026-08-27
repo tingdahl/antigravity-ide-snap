@@ -18,6 +18,7 @@ grade: stable
 confinement: classic
 base: core22
 compression: lzo
+icon: snap/gui/antigravity-ide.png
 
 # The snap version and download URL are resolved at build time by querying
 # the auto-updater API (see override-pull). Add an arm64 entry below to also
