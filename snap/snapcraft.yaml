@@ -1,12 +1,6 @@
 name: antigravity-ide-snap
-version: '0+unknown'
-title: Antigravity IDE
+adopt-info: antigravity-ide
 summary: Google Antigravity IDE — agent-first coding environment.
-contact: https://github.com/tingdahl/antigravity-ide-snap/issues
-issues: https://github.com/tingdahl/antigravity-ide-snap/issues
-source-code: https://github.com/tingdahl/antigravity-ide-snap
-website: https://antigravity.google
-icon: snap/gui/antigravity-ide.png
 description: |
   Antigravity IDE is Google's agentic development environment built on top of
   the VS Code / Electron platform. It lets you plan, build, debug and ship
@@ -14,26 +8,22 @@ description: |
 
   This snap repackages the official upstream Linux build (the
   "Antigravity IDE.tar.gz" archive published by Google) into a self-contained
-  snap. It uses classic confinement so the IDE and its agents have the same
-  access to your tools, compilers and files as a normally installed editor.
-
-  This is an unofficial community package. The issue tracker linked here is for
-  problems with the snap packaging only. Report bugs in the IDE itself to Google
-  via https://antigravity.google.
+  snap. It uses classic confinement so the IDE has full access to the host
+  toolchain (git, ssh, gpg, language runtimes, compilers) and your real home
+  directory — the same model the VS Code, IntelliJ and Sublime Text snaps use,
+  because a development IDE must drive the host's tools directly.
 
 license: Proprietary
 grade: stable
 confinement: classic
-base: core24
+base: core22
 compression: lzo
-adopt-info: antigravity-ide
 
-# Build-time fetch downloads the matching IDE tarball into this part source.
-# To also build arm64, add the corresponding "linux-arm" URL and a matching
-# build-for entry.
-platforms:
-  amd64:
-    build-on: [amd64]
+# The snap version and download URL are resolved at build time by querying
+# the auto-updater API (see override-pull). Add an arm64 entry below to also
+# cross-build for ARM.
+architectures:
+  - build-on: [amd64]
     build-for: [amd64]
 
 parts:
@@ -41,40 +31,11 @@ parts:
     plugin: dump
     source: ./upstream
     override-pull: |
-      set -eux
-
-      if [[ -n "${ANTIGRAVITY_IDE_VERSION:-}" && -n "${ANTIGRAVITY_IDE_EXECUTION_ID:-}" ]]; then
-        VERSION="$ANTIGRAVITY_IDE_VERSION"
-        EXECUTION_ID="$ANTIGRAVITY_IDE_EXECUTION_ID"
-      elif [[ -f "$CRAFT_PROJECT_DIR/UPSTREAM_VERSION" ]]; then
-        VERSION="$(tr -d '[:space:]' < "$CRAFT_PROJECT_DIR/UPSTREAM_VERSION")"
-        EXECUTION_ID="$(curl -fsSL "https://antigravity-ide-auto-updater-974169037036.us-central1.run.app/releases" | python3 -c 'import json, sys; version = sys.argv[1]; releases = json.load(sys.stdin); matches = [r for r in releases if str(r.get("version", "")) == version]; assert matches, f"No execution_id found for version {version}"; print(matches[0]["execution_id"])' "$VERSION")"
-      else
-        read -r VERSION EXECUTION_ID <<<"$(curl -fsSL "https://antigravity-ide-auto-updater-974169037036.us-central1.run.app/releases" | python3 -c 'import json, re, sys; releases = json.load(sys.stdin); semver = lambda v: tuple(([int(x) for x in re.findall(r"\d+", str(v))] + [0, 0, 0])[:3]); best = max(releases, key=lambda r: semver(r.get("version", "0.0.0"))); print(best["version"], best["execution_id"])')"
-      fi
-
-      craftctl set version="$VERSION"
-
-      case "$CRAFT_ARCH_BUILD_FOR" in
-        amd64)
-          URL="https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/${VERSION}-${EXECUTION_ID}/linux-x64/Antigravity%20IDE.tar.gz"
-          ;;
-        arm64)
-          URL="https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/${VERSION}-${EXECUTION_ID}/linux-arm/Antigravity%20IDE.tar.gz"
-          ;;
-        *)
-          echo "Unsupported architecture: $CRAFT_ARCH_BUILD_FOR"
-          exit 1
-          ;;
-      esac
-      curl --fail --location --silent --show-error \
-        --retry 8 --retry-all-errors --retry-delay 2 \
-        --connect-timeout 20 --max-time 900 \
-        -o "$CRAFT_PART_SRC/antigravity-ide-build.tar.gz" "$URL"
-    # Auto-patch the ELF interpreter and rpath of the bundled Electron binary
-    # and its shared libraries so they resolve against the base + staged libs.
-    build-attributes:
-      - enable-patchelf
+      "$CRAFT_PROJECT_DIR/scripts/pull-upstream.sh"
+    # Classic confinement runs in the host's mount namespace, so the Electron
+    # binaries keep their upstream ELF interpreter and $ORIGIN rpath and resolve
+    # the GTK / graphics / glibc stack against the host system (like the raw
+    # upstream tarball). We therefore do NOT patchelf them against the base.
     override-build: |
       set -eux
       APPDIR="$CRAFT_PART_INSTALL/usr/share/antigravity-ide"
@@ -87,71 +48,38 @@ parts:
       if [ -f "$APPDIR/chrome-sandbox" ]; then
         chmod 0755 "$APPDIR/chrome-sandbox"
       fi
+      # Source the application icon straight from the upstream tarball so it can
+      # never go stale in the repo. The file must be named to match the Icon=
+      # entry in the desktop file so snapd rewrites it to the absolute snap path.
+      install -Dm644 "$APPDIR/resources/app/resources/linux/code.png" \
+        "$CRAFT_PART_INSTALL/meta/gui/antigravity-ide.png"
     build-packages:
       - curl
+    # Under classic confinement the GTK / graphics / glibc stack is provided by
+    # the host, exactly as for the upstream tarball. We only bundle the CA
+    # certificate store and full locale data, which the app expects at fixed
+    # locations regardless of host configuration.
     stage-packages:
       - ca-certificates
-      - libasound2t64
-      - libatk-bridge2.0-0t64
-      - libatk1.0-0t64
-      - libatspi2.0-0
-      - libcairo2
-      - libcanberra-gtk3-module
-      - libcurl4
-      - libdrm2
-      - libgbm1
-      - libglib2.0-0
-      - libgtk-3-0t64
-      - libnss3
-      - libpango-1.0-0
-      - libsecret-1-0
-      - libsoup-3.0-0
-      - libwebkit2gtk-4.1-0
-      - libwayland-egl1
-      - libxcomposite1
-      - libxdamage1
-      - libxfixes3
-      - libxkbcommon0
-      - libxkbfile1
-      - libxrandr2
       - locales-all
-      - packagekit-gtk3-module
-      - xdg-utils
     prime:
       - -usr/share/doc
       - -usr/share/fonts
-      - -usr/share/icons
       - -usr/share/lintian
       - -usr/share/man
-      # Drop the bundled mesa/GL/GBM/DRM stack and use the host's, so it stays
-      # consistent with the host DRI driver module under classic confinement.
-      - -usr/lib/x86_64-linux-gnu/dri
-      - -usr/lib/x86_64-linux-gnu/gbm
-      - -usr/lib/x86_64-linux-gnu/libEGL*
-      - -usr/lib/x86_64-linux-gnu/libGLESv2*
-      - -usr/lib/x86_64-linux-gnu/libGL.so*
-      - -usr/lib/x86_64-linux-gnu/libGLdispatch*
-      - -usr/lib/x86_64-linux-gnu/libGLX*
-      - -usr/lib/x86_64-linux-gnu/libgallium*
-      - -usr/lib/x86_64-linux-gnu/libgbm*
-      - -usr/lib/x86_64-linux-gnu/libdrm*
-      - -usr/lib/x86_64-linux-gnu/libwayland-egl*
-      - -usr/lib/x86_64-linux-gnu/libxcb-dri3*
-      - -usr/lib/x86_64-linux-gnu/libxcb-glx*
-
-  launcher:
-    plugin: dump
-    source: ./scripts
-    organize:
-      antigravity-ide-launch: bin/antigravity-ide-launch
-    after:
-      - antigravity-ide
 
 apps:
   antigravity-ide:
-    command: bin/antigravity-ide-launch
+    command: usr/share/antigravity-ide/bin/antigravity-ide --no-sandbox
     common-id: antigravity-ide.desktop
+    environment:
+      CHROME_DESKTOP: antigravity-ide.desktop
+      BAMF_DESKTOP_FILE_HINT: $SNAP/meta/gui/antigravity-ide.desktop
+      ELECTRON_OZONE_PLATFORM_HINT: auto
 
   url-handler:
-    command: bin/antigravity-ide-launch --open-url
-      - ssh-keys
+    command: usr/share/antigravity-ide/bin/antigravity-ide --no-sandbox --open-url
+    environment:
+      CHROME_DESKTOP: antigravity-ide.desktop
+      BAMF_DESKTOP_FILE_HINT: $SNAP/meta/gui/antigravity-ide.desktop
+      ELECTRON_OZONE_PLATFORM_HINT: auto
