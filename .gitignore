@@ -8,5 +8,9 @@ overlay
 /*.snap
 /.snapcraft-pack*.log
 
-# Local upstream scratch area (if used manually)
-/upstream/
+# Local upstream scratch area (if used manually). Keep the directory itself
+# tracked (via .gitkeep) so a fresh clone still has a valid local source for
+# the "upstream" part in snapcraft.yaml — snapcraft can't determine the
+# source type of a path that doesn't exist on disk.
+/upstream/*
+!/upstream/.gitkeep
