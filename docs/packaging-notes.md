@@ -16,41 +16,25 @@ and contributors.
   OAuth sign-in worked) and still broke on the `home`-interface hidden-file
   rule: the IDE stores config in `~/.antigravity-ide`, which strict AppArmor
   denies. Classic sidesteps all of it.
-- The launcher stays lean: `--no-sandbox` plus one `LD_LIBRARY_PATH` export. No
-  ozone flags or portal env are needed under classic. The `LD_LIBRARY_PATH` is
-  required, though — see "Graphics / mesa" below.
+- Direct launch: the app launches directly via
+  `usr/share/antigravity-ide/bin/antigravity-ide --no-sandbox` with standard
+  desktop environment variables. No custom wrapper script or `LD_LIBRARY_PATH`
+  overrides are needed.
 
-## Graphics / mesa (the startup crash)
+## Host toolchain, graphics, and why core22 works
 
-- Symptom: immediate `SIGSEGV` on launch inside `gbm_create_device` →
-  `libgallium*.so`. Happens even with `--disable-gpu` (Chromium probes GBM
-  early).
-- Root cause: the GTK/webkit stage-packages transitively pull the whole
-  mesa/GL/GBM/DRM stack into the snap, but mesa's DRI driver module
-  (`/usr/lib/x86_64-linux-gnu/gbm/dri_gbm.so`) always loads from the **host**.
-  A bundled `libgbm`/`libgallium` mixed with the host DRI module crashes — even
-  when both are the exact same Ubuntu version.
-- Fix: do **not** ship the graphics stack; use the host's (consistent by
-  construction under classic). `snap/snapcraft.yaml` `prime:`-excludes
-  `usr/lib/x86_64-linux-gnu/{dri,gbm,libEGL*,libGLESv2*,libGL.so*,`
-  `libGLdispatch*,libGLX*,libgallium*,libgbm*,libdrm*,libwayland-egl*,`
-  `libxcb-dri3*,libxcb-glx*}`, and the launcher sets
-  `LD_LIBRARY_PATH=$SNAP/usr/lib/<triplet>:$APPDIR:/usr/lib/<triplet>:/lib/<triplet>`.
-  Bundled libs win via rpath + the leading snap paths; the excluded mesa libs
-  resolve from the host tail.
-- Note: snapd scrubs `LD_*` from the outer environment of `snap run`, so
-  `LD_LIBRARY_PATH` must be exported **inside** the launch script.
-
-## Base and toolchain
-
-- `core24` base is glibc 2.39. The upstream Antigravity Electron binary
-  requires GLIBC_2.38+ (the ELF interpreter is patched to the base's linker via
-  `enable-patchelf`), so `core22` (glibc 2.35) does **not** work.
-- `core26` cannot be built on an Ubuntu 24.04 host.
-- `core24` requires the `platforms:` stanza, not `architectures:`.
-- On core24 several runtime packages carry the `t64` suffix
-  (`libasound2t64`, `libgtk-3-0t64`, `libatk1.0-0t64`,
-  `libatk-bridge2.0-0t64`).
+- Under classic confinement, the app executes in the host's mount namespace and uses
+  the host's dynamic linker, GLIBC, and desktop/graphics stack (GTK, Mesa/DRI, X11/Wayland).
+- We do **not** use `build-attributes: [enable-patchelf]`. The upstream binaries
+  retain their original ELF interpreter and `$ORIGIN` rpaths and resolve against
+  the host system, exactly like the upstream tarball.
+- When strict confinement (or early classic setups) used `enable-patchelf`, the ELF
+  interpreter was patched to point to the base snap's glibc, requiring `core24`
+  because the upstream binary needed `GLIBC_2.38+` (while `core22` is glibc 2.35).
+  Without `enable-patchelf`, this limitation disappears and `base: core22` works fine.
+- Staged packages are kept minimal: only `ca-certificates` and `locales-all` are
+  bundled. We avoid bundling GTK, Mesa, or WebKit libraries, avoiding library
+  mismatches with host DRI modules.
 
 ## Desktop entry / icon
 
