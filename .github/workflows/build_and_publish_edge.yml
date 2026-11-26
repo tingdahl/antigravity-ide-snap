@@ -95,7 +95,20 @@ jobs:
         id: pack
         run: |
           set -euo pipefail
-          sudo snapcraft pack --destructive-mode --platform "${{ matrix.architecture }}"
+          image_info="$(python3 - <<'PY'
+          import datetime
+          import json
+          import os
+
+          print(json.dumps({
+              "build-request-id": f"gh-{os.environ['GITHUB_RUN_NUMBER']}",
+              "build-request-timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "build_url": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+          }, separators=(",", ":")))
+          PY
+          )"
+          sudo SNAPCRAFT_BUILD_INFO=1 SNAPCRAFT_IMAGE_INFO="${image_info}" \
+            snapcraft pack --destructive-mode --platform "${{ matrix.architecture }}"
 
           shopt -s nullglob
           snaps=(./antigravity-ide-snap_*_${{ matrix.architecture }}.snap)
@@ -134,6 +147,69 @@ jobs:
       - name: Install built snap
         run: |
           sudo snap install --dangerous --classic "${{ steps.pack.outputs.snap_file }}"
+
+      - name: Verify embedded build manifest
+        run: |
+          set -euo pipefail
+          manifest="/snap/antigravity-ide-snap/current/snap/manifest.yaml"
+          if [[ ! -f "${manifest}" ]]; then
+            echo "Error: expected embedded manifest at ${manifest}" >&2
+            exit 1
+          fi
+
+          python3 - "${manifest}" <<'PY'
+          import os
+          import re
+          import sys
+
+          manifest_path = sys.argv[1]
+          image_info = {}
+          in_image_info = False
+
+          with open(manifest_path, "r", encoding="utf-8") as f:
+              for raw_line in f:
+                  line = raw_line.rstrip("\r\n")
+                  if not line.strip() or line.lstrip().startswith("#"):
+                      continue
+                  if not line.startswith(" "):
+                      in_image_info = (line.strip() == "image-info:")
+                      continue
+                  if in_image_info:
+                      m = re.match(r"^\s+([A-Za-z0-9_-]+):\s*(.+?)\s*$", line)
+                      if m:
+                          image_info[m.group(1)] = m.group(2).strip("'\"")
+
+          print("Embedded image-info:", image_info)
+          if not image_info:
+              print("Error: image-info missing from manifest.yaml", file=sys.stderr)
+              sys.exit(1)
+
+          expected_id = f"gh-{os.environ['GITHUB_RUN_NUMBER']}"
+          expected_url = (
+              f"{os.environ['GITHUB_SERVER_URL']}/"
+              f"{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          )
+          if image_info.get("build-request-id") != expected_id:
+              print(
+                  f"Error: build-request-id={image_info.get('build-request-id')!r}, expected {expected_id!r}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          if image_info.get("build_url") != expected_url:
+              print(
+                  f"Error: build_url={image_info.get('build_url')!r}, expected {expected_url!r}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as sf:
+                  sf.write(
+                      f"Embedded build manifest verified: "
+                      f"`{expected_id}` ([run]({expected_url}))\n\n"
+                  )
+          PY
 
       - name: Run runtime and UI smoke tests
         run: |
