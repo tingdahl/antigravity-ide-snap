@@ -21,17 +21,18 @@ and contributors.
   desktop environment variables. No custom wrapper script or `LD_LIBRARY_PATH`
   overrides are needed.
 
-## Host toolchain, graphics, and why core22 works
+## Host toolchain, graphics, and base (`core24`)
 
 - Under classic confinement, the app executes in the host's mount namespace and uses
   the host's dynamic linker, GLIBC, and desktop/graphics stack (GTK, Mesa/DRI, X11/Wayland).
 - We do **not** use `build-attributes: [enable-patchelf]`. The upstream binaries
   retain their original ELF interpreter and `$ORIGIN` rpaths and resolve against
   the host system, exactly like the upstream tarball.
-- When strict confinement (or early classic setups) used `enable-patchelf`, the ELF
-  interpreter was patched to point to the base snap's glibc, requiring `core24`
-  because the upstream binary needed `GLIBC_2.38+` (while `core22` is glibc 2.35).
-  Without `enable-patchelf`, this limitation disappears and `base: core22` works fine.
+- Because binaries are not patchelfed against the base snap's glibc, the choice of
+  base (`core22` vs. `core24`) does not restrict host compatibility. We use
+  `base: core24` with `platforms:` for `amd64` and `arm64` so GitHub Actions
+  `ubuntu-24.04` and `ubuntu-24.04-arm` runners can build natively via
+  `snapcraft pack --destructive-mode --platform <arch>`.
 - Staged packages are kept minimal: only `ca-certificates` and `locales-all` are
   bundled. We avoid bundling GTK, Mesa, or WebKit libraries, avoiding library
   mismatches with host DRI modules.
