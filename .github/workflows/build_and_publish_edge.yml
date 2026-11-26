@@ -177,7 +177,7 @@ jobs:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_EDGE_CREDENTIALS }}
         run: |
           set -euo pipefail
-          snapcraft upload --release=latest/edge "${{ steps.pack.outputs.snap_file }}"
+          snapcraft upload --release=edge "${{ steps.pack.outputs.snap_file }}"
           {
             echo "#### Published to \`latest/edge\` (\`${{ matrix.architecture }}\`)"
             echo ""
