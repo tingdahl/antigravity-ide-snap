@@ -1,0 +1,490 @@
+name: Promote snap from edge to stable
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Check readiness and run runtime/UI smoke tests without releasing to latest/stable (uncheck to release)"
+        required: false
+        default: true
+        type: boolean
+      allow_partial_arches:
+        description: "Promote architectures matching UPSTREAM_VERSION even if other architectures are not ready yet (amd64 still required)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  promote-edge-to-stable:
+    concurrency:
+      group: promote-snap-stable-release
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Check if latest/edge is ready to promote
+        id: check_edge
+        env:
+          ALLOW_PARTIAL_ARCHES: ${{ inputs.allow_partial_arches || 'false' }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+
+          def parse_inline_or_scalar_arches(val):
+              val = val.strip()
+              if val.startswith("[") and val.endswith("]"):
+                  items = [item.strip().strip("'\"") for item in val[1:-1].split(",")]
+                  return [item for item in items if item]
+              item = val.strip("'\"")
+              return [item] if item else []
+
+
+          def parse_snap_metadata(snapcraft_path, version_path):
+              snap_name = None
+              expected_arches = []
+              in_platforms = False
+              in_architectures = False
+              in_build_for = False
+              build_for_indent = 0
+
+              with open(snapcraft_path, "r", encoding="utf-8") as f:
+                  for raw_line in f:
+                      line = raw_line.rstrip("\r\n")
+                      stripped = line.strip()
+                      if not stripped or stripped.startswith("#"):
+                          continue
+
+                      # Strip inline comments outside quotes conservatively.
+                      clean = re.sub(r"\s+#.*$", "", line)
+                      indent = len(line) - len(line.lstrip(" "))
+
+                      if indent == 0:
+                          in_platforms = False
+                          in_architectures = False
+                          in_build_for = False
+
+                      if in_platforms:
+                          arch_match = re.match(r"^  ([a-zA-Z0-9_-]+):\s*$", clean)
+                          if arch_match:
+                              arch = arch_match.group(1)
+                              if arch not in expected_arches:
+                                  expected_arches.append(arch)
+                          continue
+
+                      if in_architectures:
+                          if in_build_for and indent <= build_for_indent and not clean.lstrip().startswith("- "):
+                              in_build_for = False
+
+                          if in_build_for:
+                              item_match = re.match(r"^\s*-\s+([a-zA-Z0-9_-]+)\s*$", clean)
+                              if item_match:
+                                  arch = item_match.group(1)
+                                  if arch not in expected_arches:
+                                      expected_arches.append(arch)
+                              continue
+
+                          bf_match = re.match(r"^\s*(?:-\s*)?build-for:\s*(.*)$", clean)
+                          if bf_match:
+                              rhs = bf_match.group(1).strip()
+                              if rhs:
+                                  for arch in parse_inline_or_scalar_arches(rhs):
+                                      if arch not in expected_arches:
+                                          expected_arches.append(arch)
+                              else:
+                                  in_build_for = True
+                                  build_for_indent = indent
+                              continue
+
+                          simple_arch_match = re.match(r"^\s*-\s+([a-zA-Z0-9_-]+)\s*$", clean)
+                          if simple_arch_match and ":" not in clean:
+                              arch = simple_arch_match.group(1)
+                              if arch not in expected_arches:
+                                  expected_arches.append(arch)
+                          continue
+
+                      if re.match(r"^platforms:\s*$", clean):
+                          in_platforms = True
+                          continue
+
+                      if re.match(r"^architectures:\s*$", clean):
+                          in_architectures = True
+                          continue
+
+                      name_match = re.match(r"^name:\s*(.+?)\s*$", clean)
+                      if name_match:
+                          snap_name = name_match.group(1).strip().strip("'\"")
+                          continue
+
+              with open(version_path, "r", encoding="utf-8") as f:
+                  target_version = f.read().strip()
+
+              if not snap_name or not target_version or not expected_arches:
+                  print(
+                      f"Failed to parse metadata (name={snap_name!r}, "
+                      f"version={target_version!r}, arches={expected_arches!r})",
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+
+              return snap_name, target_version, expected_arches
+
+
+          def fetch_snap_info(snap_name):
+              url = f"https://api.snapcraft.io/v2/snaps/info/{snap_name}"
+              req = urllib.request.Request(
+                  url,
+                  headers={
+                      "Snap-Device-Series": "16",
+                      "Accept": "application/json",
+                      "User-Agent": f"{snap_name}-promote-workflow/1.0",
+                  },
+              )
+              for attempt in range(3):
+                  try:
+                      with urllib.request.urlopen(req, timeout=30) as resp:
+                          return json.loads(resp.read().decode("utf-8"))
+                  except urllib.error.HTTPError as err:
+                      if err.code in (429, 500, 502, 503, 504) and attempt < 2:
+                          time.sleep(2 ** attempt)
+                          continue
+                      raise
+
+
+          def write_github_output(values):
+              output_path = os.environ.get("GITHUB_OUTPUT")
+              if not output_path:
+                  return
+              with open(output_path, "a", encoding="utf-8") as f:
+                  for key, val in values.items():
+                      f.write(f"{key}={val}\n")
+
+
+          def append_step_summary(lines):
+              summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+              if not summary_path:
+                  return
+              with open(summary_path, "a", encoding="utf-8") as f:
+                  f.write("\n".join(lines) + "\n")
+
+
+          def main():
+              allow_partial_arches = (
+                  os.environ.get("ALLOW_PARTIAL_ARCHES", "false").lower() == "true"
+              )
+
+              snap_name, target_version, expected_arches = parse_snap_metadata(
+                  "snap/snapcraft.yaml", "UPSTREAM_VERSION"
+              )
+              data = fetch_snap_info(snap_name)
+
+              edge_map = {}
+              stable_map = {}
+
+              for entry in data.get("channel-map", []):
+                  ch = entry.get("channel", {})
+                  if ch.get("track") != "latest":
+                      continue
+                  risk = ch.get("risk")
+                  arch = ch.get("architecture")
+                  if not arch or risk not in ("edge", "stable"):
+                      continue
+                  record = {
+                      "version": str(entry.get("version", "")),
+                      "revision": int(entry["revision"]),
+                      "released_at": ch.get("released-at", ""),
+                  }
+                  if risk == "edge":
+                      edge_map[arch] = record
+                  else:
+                      stable_map[arch] = record
+
+              print(
+                  f"Snap: {snap_name} | Target version (UPSTREAM_VERSION): {target_version} | "
+                  f"Allow partial arches: {allow_partial_arches}"
+              )
+              print(f"{'arch':<10} | {'edge':<18} | {'stable':<18} | state")
+              print("-" * 72)
+
+              rows = []
+              for arch in expected_arches:
+                  edge = edge_map.get(arch)
+                  stable = stable_map.get(arch)
+                  edge_str = f"{edge['version']} (r{edge['revision']})" if edge else "-"
+                  stable_str = (
+                      f"{stable['version']} (r{stable['revision']})" if stable else "-"
+                  )
+
+                  if edge and stable and edge["revision"] < stable["revision"]:
+                      state = "ERROR: edge_rev < stable_rev"
+                  elif not edge or edge["version"] != target_version:
+                      state = "waiting on edge"
+                  elif not stable or edge["revision"] != stable["revision"]:
+                      state = "ready to promote"
+                  else:
+                      state = "up to date"
+
+                  print(f"{arch:<10} | {edge_str:<18} | {stable_str:<18} | {state}")
+                  rows.append((arch, edge_str, stable_str, state))
+
+              for arch in expected_arches:
+                  if arch in edge_map and arch in stable_map:
+                      if edge_map[arch]["revision"] < stable_map[arch]["revision"]:
+                          print(
+                              f"Refusing to downgrade {arch}: edge revision "
+                              f"{edge_map[arch]['revision']} < stable revision "
+                              f"{stable_map[arch]['revision']}",
+                              file=sys.stderr,
+                          )
+                          sys.exit(1)
+
+              ready_arches = [
+                  a
+                  for a in expected_arches
+                  if a in edge_map and edge_map[a]["version"] == target_version
+              ]
+              pending_arches = [a for a in expected_arches if a not in ready_arches]
+
+              should_promote = False
+              reason = ""
+              candidates = []
+
+              if "amd64" not in ready_arches:
+                  reason = (
+                      f"amd64 on latest/edge is not on target version {target_version} yet."
+                  )
+              elif pending_arches and not allow_partial_arches:
+                  reason = (
+                      f"Waiting for architectures on latest/edge to reach {target_version}: "
+                      + ", ".join(pending_arches)
+                  )
+              else:
+                  candidates = [
+                      a
+                      for a in ready_arches
+                      if a not in stable_map
+                      or edge_map[a]["revision"] != stable_map[a]["revision"]
+                  ]
+                  if not candidates:
+                      reason = (
+                          f"latest/stable is already up to date with latest/edge "
+                          f"({target_version})."
+                      )
+                  elif (
+                      not allow_partial_arches
+                      and all(
+                          a in stable_map and stable_map[a]["version"] == target_version
+                          for a in expected_arches
+                      )
+                      and len(candidates) < len(expected_arches)
+                  ):
+                      reason = (
+                          f"Same-version rebuild for {target_version} is still in progress "
+                          f"({len(candidates)}/{len(expected_arches)} architectures updated)."
+                      )
+                  else:
+                      should_promote = True
+                      reason = "Ready to test and promote: " + ", ".join(
+                          f"{a}:r{edge_map[a]['revision']}" for a in candidates
+                      )
+
+              print(f"\nDecision: should_promote={str(should_promote).lower()} ({reason})")
+
+              outputs = {
+                  "should_promote": str(should_promote).lower(),
+                  "snap_name": snap_name,
+                  "target_version": target_version,
+              }
+              if should_promote:
+                  outputs["amd64_revision"] = str(edge_map["amd64"]["revision"])
+                  outputs["revisions_to_release"] = " ".join(
+                      f"{a}:{edge_map[a]['revision']}" for a in candidates
+                  )
+
+              write_github_output(outputs)
+
+              summary = [
+                  f"### Snap Promotion Check (`{snap_name}` `{target_version}`)",
+                  "",
+                  f"**Decision:** `{str(should_promote).lower()}` — {reason}",
+                  "",
+                  "| Arch | `latest/edge` | `latest/stable` | State |",
+                  "| --- | --- | --- | --- |",
+              ]
+              for arch, edge_str, stable_str, state in rows:
+                  summary.append(
+                      f"| `{arch}` | `{edge_str}` | `{stable_str}` | {state} |"
+                  )
+              summary.append("")
+              append_step_summary(summary)
+
+
+          if __name__ == "__main__":
+              main()
+          PY
+
+      - name: Install desktop runtime libraries and Xvfb tools
+        if: steps.check_edge.outputs.should_promote == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb \
+            dbus-x11 \
+            x11-utils \
+            imagemagick \
+            file \
+            libgtk-3-0t64 \
+            libnss3 \
+            libgbm1 \
+            libasound2t64 \
+            libatk1.0-0t64 \
+            libatk-bridge2.0-0t64 \
+            libcups2t64 \
+            libdrm2 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxrandr2 \
+            libxkbcommon0 \
+            libxkbfile1 \
+            libatspi2.0-0t64 \
+            libsecret-1-0 \
+            libxss1
+
+      - name: Install snap from latest/edge
+        if: steps.check_edge.outputs.should_promote == 'true'
+        env:
+          SNAP_NAME: ${{ steps.check_edge.outputs.snap_name }}
+          TARGET_VERSION: ${{ steps.check_edge.outputs.target_version }}
+          AMD64_REVISION: ${{ steps.check_edge.outputs.amd64_revision }}
+        run: |
+          set -euo pipefail
+
+          sudo snap install "${SNAP_NAME}" --channel=latest/edge --classic
+
+          read -r installed_version installed_revision < <(snap list "${SNAP_NAME}" | awk 'NR==2 { print $2, $3 }')
+          echo "Installed ${SNAP_NAME}: version=${installed_version} revision=${installed_revision}"
+
+          if [[ "${installed_version}" != "${TARGET_VERSION}" || "${installed_revision}" != "${AMD64_REVISION}" ]]; then
+            echo "Error: Installed snap (${installed_version} r${installed_revision}) does not match checked latest/edge (${TARGET_VERSION} r${AMD64_REVISION})" >&2
+            exit 1
+          fi
+
+      - name: Run runtime and UI smoke tests
+        if: steps.check_edge.outputs.should_promote == 'true'
+        env:
+          SNAP_NAME: ${{ steps.check_edge.outputs.snap_name }}
+          TARGET_VERSION: ${{ steps.check_edge.outputs.target_version }}
+        run: |
+          set -euo pipefail
+
+          EXPECTED_IDE_VERSION="${TARGET_VERSION}" \
+            scripts/ui-smoke-test.sh "${SNAP_NAME}" antigravity-ide ui-smoke-artifacts
+
+          {
+            echo "#### Runtime & UI Smoke Tests"
+            echo ""
+            echo "Passed \`scripts/ui-smoke-test.sh\` (ELF linkage, Xvfb window mapping, non-blank screenshot, CDP workbench DOM/toast check, and clean \`main.log\` / \`renderer.log\`)."
+            echo ""
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload UI smoke test artifacts
+        if: always() && steps.check_edge.outputs.should_promote == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-smoke-artifacts-${{ steps.check_edge.outputs.target_version }}-r${{ steps.check_edge.outputs.amd64_revision }}
+          path: ui-smoke-artifacts
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Dry-run notice
+        if: steps.check_edge.outputs.should_promote == 'true' && inputs.dry_run == true
+        env:
+          SNAP_NAME: ${{ steps.check_edge.outputs.snap_name }}
+          REVISIONS_TO_RELEASE: ${{ steps.check_edge.outputs.revisions_to_release }}
+        run: |
+          set -euo pipefail
+
+          echo "Dry run enabled; skipping release to latest/stable. Would have run:"
+          {
+            echo "#### Dry Run"
+            echo ""
+            echo "Smoke tests passed. Would have executed:"
+            echo '```bash'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          for pair in ${REVISIONS_TO_RELEASE}; do
+            arch="${pair%%:*}"
+            rev="${pair##*:}"
+            cmd="snapcraft release ${SNAP_NAME} ${rev} latest/stable"
+            echo "  [${arch}] ${cmd}"
+            echo "${cmd}  # ${arch}" >> "${GITHUB_STEP_SUMMARY}"
+          done
+
+          echo '```' >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Verify SNAPCRAFT_STORE_CREDENTIALS secret is set
+        if: steps.check_edge.outputs.should_promote == 'true' && inputs.dry_run != true
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${SNAPCRAFT_STORE_CREDENTIALS}" ]]; then
+            echo "Error: SNAPCRAFT_STORE_CREDENTIALS repository secret is not configured." >&2
+            echo "Generate it locally with:" >&2
+            echo "  snapcraft export-login --snaps=antigravity-ide-snap --channels=stable --acls=package_access,package_release -" >&2
+            exit 1
+          fi
+
+      - name: Install snapcraft
+        if: steps.check_edge.outputs.should_promote == 'true' && inputs.dry_run != true
+        run: |
+          sudo snap install snapcraft --classic
+
+      - name: Release verified revisions to latest/stable
+        if: steps.check_edge.outputs.should_promote == 'true' && inputs.dry_run != true
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+          SNAP_NAME: ${{ steps.check_edge.outputs.snap_name }}
+          REVISIONS_TO_RELEASE: ${{ steps.check_edge.outputs.revisions_to_release }}
+        run: |
+          set -euo pipefail
+
+          for pair in ${REVISIONS_TO_RELEASE}; do
+            arch="${pair%%:*}"
+            rev="${pair##*:}"
+            echo "Releasing ${SNAP_NAME} revision ${rev} (${arch}) to latest/stable..."
+            snapcraft release "${SNAP_NAME}" "${rev}" latest/stable
+          done
+
+      - name: Report final store status
+        if: steps.check_edge.outputs.should_promote == 'true' && inputs.dry_run != true
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+          SNAP_NAME: ${{ steps.check_edge.outputs.snap_name }}
+        run: |
+          set -euo pipefail
+
+          status_output="$(snapcraft status "${SNAP_NAME}")"
+          echo "${status_output}"
+
+          {
+            echo "#### Final Snap Store Status"
+            echo ""
+            echo '```text'
+            echo "${status_output}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
