@@ -381,6 +381,18 @@ jobs:
 
       - name: Install desktop runtime libraries and Xvfb tools
         run: |
+          sudo tee /etc/apt/apt.conf.d/99-ci-network >/dev/null <<'EOF'
+          Acquire::ForceIPv4 "true";
+          Acquire::http::Timeout "10";
+          Acquire::https::Timeout "10";
+          Acquire::Retries "3";
+          EOF
+          if [[ "$(dpkg --print-architecture)" == "amd64" && -f /etc/apt/apt-mirrors.txt ]]; then
+            printf '%s\n' \
+              'http://azure.archive.ubuntu.com/ubuntu' \
+              'http://archive.ubuntu.com/ubuntu' \
+              | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             xvfb \
