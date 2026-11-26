@@ -430,7 +430,7 @@ jobs:
           for pair in ${REVISIONS_TO_RELEASE}; do
             arch="${pair%%:*}"
             rev="${pair##*:}"
-            cmd="snapcraft release ${SNAP_NAME} ${rev} latest/stable"
+            cmd="snapcraft release ${SNAP_NAME} ${rev} stable"
             echo "  [${arch}] ${cmd}"
             echo "${cmd}  # ${arch}" >> "${GITHUB_STEP_SUMMARY}"
           done
@@ -469,7 +469,7 @@ jobs:
             arch="${pair%%:*}"
             rev="${pair##*:}"
             echo "Releasing ${SNAP_NAME} revision ${rev} (${arch}) to latest/stable..."
-            snapcraft release "${SNAP_NAME}" "${rev}" latest/stable
+            snapcraft release "${SNAP_NAME}" "${rev}" stable
           done
 
       - name: Report final store status
