@@ -361,6 +361,8 @@ jobs:
             libxkbfile1 \
             libatspi2.0-0t64 \
             libsecret-1-0 \
+            libsoup-3.0-0 \
+            libwebkit2gtk-4.1-0 \
             libxss1
 
       - name: Install snap from latest/edge
@@ -402,7 +404,7 @@ jobs:
 
       - name: Upload UI smoke test artifacts
         if: always() && steps.check_edge.outputs.should_promote == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-smoke-artifacts-${{ steps.check_edge.outputs.target_version }}-r${{ steps.check_edge.outputs.amd64_revision }}
           path: ui-smoke-artifacts
