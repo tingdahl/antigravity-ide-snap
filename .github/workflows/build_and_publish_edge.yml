@@ -1,0 +1,186 @@
+name: Build, test, and publish snap to edge
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+    paths:
+      - "snap/**"
+      - "scripts/pull-upstream.sh"
+      - "scripts/e2e-runtime-check.sh"
+      - "scripts/ui-smoke-test.sh"
+      - "UPSTREAM_VERSION"
+      - ".github/workflows/build_and_publish_edge.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "snap/**"
+      - "scripts/pull-upstream.sh"
+      - "scripts/e2e-runtime-check.sh"
+      - "scripts/ui-smoke-test.sh"
+      - "UPSTREAM_VERSION"
+      - ".github/workflows/build_and_publish_edge.yml"
+  workflow_dispatch:
+    inputs:
+      publish_to_edge:
+        description: "Upload verified snaps to latest/edge after smoke tests pass"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-and-publish-edge-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-test:
+    name: Build & test (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install desktop runtime libraries, Xvfb tools, and snapcraft
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb \
+            dbus-x11 \
+            x11-utils \
+            imagemagick \
+            file \
+            libgtk-3-0t64 \
+            libnss3 \
+            libgbm1 \
+            libasound2t64 \
+            libatk1.0-0t64 \
+            libatk-bridge2.0-0t64 \
+            libcups2t64 \
+            libdrm2 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxrandr2 \
+            libxkbcommon0 \
+            libxkbfile1 \
+            libatspi2.0-0t64 \
+            libsecret-1-0 \
+            libsoup-3.0-0 \
+            libwebkit2gtk-4.1-0 \
+            libxss1
+          sudo snap install snapcraft --classic
+
+      - name: Read target version
+        id: meta
+        run: echo "version=$(tr -d '[:space:]' < UPSTREAM_VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Build snap package
+        id: pack
+        run: |
+          set -euo pipefail
+          sudo snapcraft pack --destructive-mode --platform "${{ matrix.architecture }}"
+
+          shopt -s nullglob
+          snaps=(./antigravity-ide-snap_*_${{ matrix.architecture }}.snap)
+          if [[ "${#snaps[@]}" -ne 1 ]]; then
+            echo "Error: expected exactly 1 .snap file for ${{ matrix.architecture }}, found ${#snaps[@]}: ${snaps[*]:-none}" >&2
+            exit 1
+          fi
+
+          snap_file="${snaps[0]}"
+          sudo chmod a+r "${snap_file}"
+          echo "Built snap: ${snap_file}"
+          echo "snap_file=${snap_file}" >> "$GITHUB_OUTPUT"
+
+      - name: Print snapcraft execution log on failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          latest_log=""
+          for log_dir in /root/.local/state/snapcraft/log "$HOME/.local/state/snapcraft/log"; do
+            candidate="$(sudo find "${log_dir}" -maxdepth 1 -name 'snapcraft-*.log' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+            if [[ -n "${candidate}" ]]; then
+              latest_log="${candidate}"
+              break
+            fi
+          done
+
+          if [[ -z "${latest_log}" ]]; then
+            echo "No snapcraft execution log file found."
+            exit 0
+          fi
+
+          echo "::group::Snapcraft execution log (${latest_log})"
+          sudo cat "${latest_log}"
+          echo "::endgroup::"
+
+      - name: Install built snap
+        run: |
+          sudo snap install --dangerous --classic "${{ steps.pack.outputs.snap_file }}"
+
+      - name: Run runtime and UI smoke tests
+        run: |
+          set -euo pipefail
+          EXPECTED_IDE_VERSION="${{ steps.meta.outputs.version }}" \
+            scripts/ui-smoke-test.sh antigravity-ide-snap antigravity-ide "ui-smoke-artifacts-${{ matrix.architecture }}"
+
+      - name: Upload UI smoke test artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-ui-smoke-${{ steps.meta.outputs.version }}-${{ matrix.architecture }}
+          path: ui-smoke-artifacts-${{ matrix.architecture }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload built snap artifact
+        if: steps.pack.outputs.snap_file != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: snap-${{ steps.meta.outputs.version }}-${{ matrix.architecture }}
+          path: ${{ steps.pack.outputs.snap_file }}
+          retention-days: 3
+
+      - name: Verify SNAPCRAFT_EDGE_CREDENTIALS secret is set
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_to_edge == true)
+        env:
+          SNAPCRAFT_EDGE_CREDENTIALS: ${{ secrets.SNAPCRAFT_EDGE_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SNAPCRAFT_EDGE_CREDENTIALS}" ]]; then
+            echo "Error: SNAPCRAFT_EDGE_CREDENTIALS repository secret is not configured." >&2
+            echo "Generate it locally with:" >&2
+            echo "  snapcraft export-login --snaps=antigravity-ide-snap --channels=edge --acls=package_access,package_push,package_update,package_release -" >&2
+            exit 1
+          fi
+
+      - name: Upload and release snap to latest/edge
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_to_edge == true)
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_EDGE_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+          snapcraft upload --release=edge "${{ steps.pack.outputs.snap_file }}"
+          {
+            echo "#### Published to \`latest/edge\` (\`${{ matrix.architecture }}\`)"
+            echo ""
+            echo "Uploaded \`${{ steps.pack.outputs.snap_file }}\` (version \`${{ steps.meta.outputs.version }}\`)."
+            echo ""
+          } >> "${GITHUB_STEP_SUMMARY}"

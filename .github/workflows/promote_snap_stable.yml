@@ -18,11 +18,14 @@ permissions:
   contents: read
 
 jobs:
-  promote-edge-to-stable:
-    concurrency:
-      group: promote-snap-stable-release
-      cancel-in-progress: false
+  check-edge:
     runs-on: ubuntu-24.04
+    outputs:
+      should_promote: ${{ steps.check_edge.outputs.should_promote }}
+      snap_name: ${{ steps.check_edge.outputs.snap_name }}
+      target_version: ${{ steps.check_edge.outputs.target_version }}
+      revisions_to_release: ${{ steps.check_edge.outputs.revisions_to_release }}
+      candidates_json: ${{ steps.check_edge.outputs.candidates_json }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -41,6 +44,11 @@ jobs:
           import time
           import urllib.error
           import urllib.request
+
+          RUNNER_MAP = {
+              "amd64": "ubuntu-24.04",
+              "arm64": "ubuntu-24.04-arm",
+          }
 
 
           def parse_inline_or_scalar_arches(val):
@@ -188,6 +196,14 @@ jobs:
               snap_name, target_version, expected_arches = parse_snap_metadata(
                   "snap/snapcraft.yaml", "UPSTREAM_VERSION"
               )
+              for arch in expected_arches:
+                  if arch not in RUNNER_MAP:
+                      print(
+                          f"Unsupported architecture {arch!r}; known runners: {list(RUNNER_MAP)}",
+                          file=sys.stderr,
+                      )
+                      sys.exit(1)
+
               data = fetch_snap_info(snap_name)
 
               edge_map = {}
@@ -306,12 +322,27 @@ jobs:
                   "should_promote": str(should_promote).lower(),
                   "snap_name": snap_name,
                   "target_version": target_version,
+                  "revisions_to_release": (
+                      " ".join(f"{a}:{edge_map[a]['revision']}" for a in candidates)
+                      if should_promote
+                      else ""
+                  ),
+                  "candidates_json": (
+                      json.dumps(
+                          [
+                              {
+                                  "arch": a,
+                                  "runner": RUNNER_MAP[a],
+                                  "revision": str(edge_map[a]["revision"]),
+                              }
+                              for a in candidates
+                          ],
+                          separators=(",", ":"),
+                      )
+                      if should_promote
+                      else "[]"
+                  ),
               }
-              if should_promote:
-                  outputs["amd64_revision"] = str(edge_map["amd64"]["revision"])
-                  outputs["revisions_to_release"] = " ".join(
-                      f"{a}:{edge_map[a]['revision']}" for a in candidates
-                  )
 
               write_github_output(outputs)
 
@@ -335,8 +366,20 @@ jobs:
               main()
           PY
 
+  smoke-test:
+    name: Smoke test (${{ matrix.arch }})
+    needs: [check-edge]
+    if: needs.check-edge.outputs.should_promote == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.check-edge.outputs.candidates_json || '[]') }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
       - name: Install desktop runtime libraries and Xvfb tools
-        if: steps.check_edge.outputs.should_promote == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -366,56 +409,62 @@ jobs:
             libxss1
 
       - name: Install snap from latest/edge
-        if: steps.check_edge.outputs.should_promote == 'true'
         env:
-          SNAP_NAME: ${{ steps.check_edge.outputs.snap_name }}
-          TARGET_VERSION: ${{ steps.check_edge.outputs.target_version }}
-          AMD64_REVISION: ${{ steps.check_edge.outputs.amd64_revision }}
+          SNAP_NAME: ${{ needs.check-edge.outputs.snap_name }}
+          TARGET_VERSION: ${{ needs.check-edge.outputs.target_version }}
+          EXPECTED_REVISION: ${{ matrix.revision }}
         run: |
           set -euo pipefail
 
           sudo snap install "${SNAP_NAME}" --channel=latest/edge --classic
 
           read -r installed_version installed_revision < <(snap list "${SNAP_NAME}" | awk 'NR==2 { print $2, $3 }')
-          echo "Installed ${SNAP_NAME}: version=${installed_version} revision=${installed_revision}"
+          echo "Installed ${SNAP_NAME} (${{ matrix.arch }}): version=${installed_version} revision=${installed_revision}"
 
-          if [[ "${installed_version}" != "${TARGET_VERSION}" || "${installed_revision}" != "${AMD64_REVISION}" ]]; then
-            echo "Error: Installed snap (${installed_version} r${installed_revision}) does not match checked latest/edge (${TARGET_VERSION} r${AMD64_REVISION})" >&2
+          if [[ "${installed_version}" != "${TARGET_VERSION}" || "${installed_revision}" != "${EXPECTED_REVISION}" ]]; then
+            echo "Error: Installed snap (${installed_version} r${installed_revision}) does not match checked latest/edge (${TARGET_VERSION} r${EXPECTED_REVISION})" >&2
             exit 1
           fi
 
       - name: Run runtime and UI smoke tests
-        if: steps.check_edge.outputs.should_promote == 'true'
         env:
-          SNAP_NAME: ${{ steps.check_edge.outputs.snap_name }}
-          TARGET_VERSION: ${{ steps.check_edge.outputs.target_version }}
+          SNAP_NAME: ${{ needs.check-edge.outputs.snap_name }}
+          TARGET_VERSION: ${{ needs.check-edge.outputs.target_version }}
         run: |
           set -euo pipefail
 
           EXPECTED_IDE_VERSION="${TARGET_VERSION}" \
-            scripts/ui-smoke-test.sh "${SNAP_NAME}" antigravity-ide ui-smoke-artifacts
+            scripts/ui-smoke-test.sh "${SNAP_NAME}" antigravity-ide "ui-smoke-artifacts-${{ matrix.arch }}"
 
           {
-            echo "#### Runtime & UI Smoke Tests"
+            echo "#### Runtime & UI Smoke Tests (\`${{ matrix.arch }}\`)"
             echo ""
             echo "Passed \`scripts/ui-smoke-test.sh\` (ELF linkage, Xvfb window mapping, non-blank screenshot, CDP workbench DOM/toast check, and clean \`main.log\` / \`renderer.log\`)."
             echo ""
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload UI smoke test artifacts
-        if: always() && steps.check_edge.outputs.should_promote == 'true'
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: ui-smoke-artifacts-${{ steps.check_edge.outputs.target_version }}-r${{ steps.check_edge.outputs.amd64_revision }}
-          path: ui-smoke-artifacts
+          name: ui-smoke-artifacts-${{ needs.check-edge.outputs.target_version }}-${{ matrix.arch }}-r${{ matrix.revision }}
+          path: ui-smoke-artifacts-${{ matrix.arch }}
           if-no-files-found: warn
           retention-days: 14
 
+  release-stable:
+    needs: [check-edge, smoke-test]
+    if: needs.check-edge.outputs.should_promote == 'true' && needs.smoke-test.result == 'success'
+    concurrency:
+      group: promote-snap-stable-release
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    steps:
       - name: Dry-run notice
-        if: steps.check_edge.outputs.should_promote == 'true' && inputs.dry_run == true
+        if: inputs.dry_run == true
         env:
-          SNAP_NAME: ${{ steps.check_edge.outputs.snap_name }}
-          REVISIONS_TO_RELEASE: ${{ steps.check_edge.outputs.revisions_to_release }}
+          SNAP_NAME: ${{ needs.check-edge.outputs.snap_name }}
+          REVISIONS_TO_RELEASE: ${{ needs.check-edge.outputs.revisions_to_release }}
         run: |
           set -euo pipefail
 
@@ -423,7 +472,7 @@ jobs:
           {
             echo "#### Dry Run"
             echo ""
-            echo "Smoke tests passed. Would have executed:"
+            echo "Smoke tests passed on all candidate architectures. Would have executed:"
             echo '```bash'
           } >> "${GITHUB_STEP_SUMMARY}"
 
@@ -438,7 +487,7 @@ jobs:
           echo '```' >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Verify SNAPCRAFT_STORE_CREDENTIALS secret is set
-        if: steps.check_edge.outputs.should_promote == 'true' && inputs.dry_run != true
+        if: inputs.dry_run != true
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
         run: |
@@ -452,16 +501,16 @@ jobs:
           fi
 
       - name: Install snapcraft
-        if: steps.check_edge.outputs.should_promote == 'true' && inputs.dry_run != true
+        if: inputs.dry_run != true
         run: |
           sudo snap install snapcraft --classic
 
       - name: Release verified revisions to latest/stable
-        if: steps.check_edge.outputs.should_promote == 'true' && inputs.dry_run != true
+        if: inputs.dry_run != true
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
-          SNAP_NAME: ${{ steps.check_edge.outputs.snap_name }}
-          REVISIONS_TO_RELEASE: ${{ steps.check_edge.outputs.revisions_to_release }}
+          SNAP_NAME: ${{ needs.check-edge.outputs.snap_name }}
+          REVISIONS_TO_RELEASE: ${{ needs.check-edge.outputs.revisions_to_release }}
         run: |
           set -euo pipefail
 
@@ -473,10 +522,10 @@ jobs:
           done
 
       - name: Report final store status
-        if: steps.check_edge.outputs.should_promote == 'true' && inputs.dry_run != true
+        if: inputs.dry_run != true
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
-          SNAP_NAME: ${{ steps.check_edge.outputs.snap_name }}
+          SNAP_NAME: ${{ needs.check-edge.outputs.snap_name }}
         run: |
           set -euo pipefail
 
